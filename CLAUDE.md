@@ -2,67 +2,74 @@
 
 ## Project Overview
 
-`ctxpack` is a Python CLI tool that ingests a codebase, a task description, and a token budget, then outputs the best achievable context bundle for an AI coding assistant — along with a truthful manifest listing what was left out and why. The repository is in **spec/implementation phase**; `SPEC.md` is the authoritative specification and `ctxpack.py` contains the working implementation.
+`ctxpack` is a Python CLI tool that produces a single best context bundle in Markdown format for an LLM task, strictly within a token budget. It walks a project folder, ranks files by relevance, and assembles the bundle deterministically. Built with Python 3.10+ standard library only — zero external dependencies.
 
-## Tech Stack
+## Build & Execution
 
-- **Python 3.10+**, standard library only — no `pip install`, no third-party packages, no network calls.
-- Two source files: `ctxpack.py` (CLI entry point, bundle assembly, noise detection) and `ranking.py` (tokenization, scoring, ranking).
+### Run the CLI
 
-## Commands
+```powershell
+python ctxpack.py --path <folder> --task "<description>" --budget <int>
+```
 
-| Command | Description |
-|---|---|
-| `python ctxpack.py --path <folder> --task "<task>" --budget <int>` | Pack a context bundle |
-| `python ctxpack.py --path <folder> --task "<task>" --budget <int> --out <file>` | Write bundle to file |
-| `python ctxpack.py --path <folder> --task "<task>" --budget <int> --manifest <file>` | Write manifest JSON to file |
+### Common Commands
 
-Flags: `--path` (required, folder to pack), `--task` (required, task description), `--budget` (required, positive integer), `--out` (optional, output file), `--manifest` (optional, manifest JSON file).
+```powershell
+# Basic run (stdout)
+python ctxpack.py --path ./my_project --task "summarize the auth module" --budget 2000
 
-## Exit Codes
+# Save bundle to file
+python ctxpack.py --path ./my_project --task "summarize the auth module" --budget 2000 --out bundle.md
+
+# Save manifest JSON
+python ctxpack.py --path ./my_project --task "summarize the auth module" --budget 2000 --manifest manifest.json
+
+# Verify token count manually (stdlib only)
+python -c "import math; print(math.ceil(len(open('bundle.md').read()) / 4))"
+```
+
+### Exit Codes
 
 | Code | Meaning |
-|---|---|
+|------|---------|
 | `0` | Success |
 | `1` | Invalid arguments |
-| `2` | `--path` does not exist, is not a directory, or is not readable |
+| `2` | Path not found or unreadable |
 
-All errors produce exactly one plain-language line to stderr — never a raw traceback.
+## Code Style & Architectural Constraints
 
-## Coding Standards
+- **Standard library only** — No `pip install`, no third-party packages, no network calls.
+- **Token counting** — Always use `math.ceil(len(text) / 4)`. Never use an external tokenizer.
+- **Exit codes** — `0` success, `1` invalid args, `2` bad path. Never expose raw tracebacks.
+- **Deterministic output** — Sorted walk, alphabetical tie-breaking, no timestamps or randomness.
+- **Modular layers** — CLI parsing, file walking, ranking logic, bundling, and manifest creation must stay in separate modules/responsibilities.
 
-- **Modular functions** with clear single responsibilities; each function does one thing and is named descriptively.
-- **Constants** in `SCREAMING_SNAKE_CASE` (e.g. `NOISE_DIRS`, `TRUNCATION_FLOOR_TOKENS`).
-- **Determinism everywhere**: file walks are sorted before scoring; ranking ties are broken alphabetically by path. No timestamps, random IDs, or set/dict-order-dependent values.
-- **Token counting**: `math.ceil(len(text) / 4)` — no tokenizer libraries.
-- **Imports**: stdlib `argparse`, `json`, `math`, `os`, `sys` at the top of `ctxpack.py`; `ranking.py` imports `os` and `string`.
-
-## Key Architecture
-
-- **Noise detection** is layered: structural (directory names like `.git`, `__pycache__`, `node_modules`), pattern-based (lockfiles, `.min.js`, `.min.css`), and heuristic (UTF-8 decode failure, null bytes, non-printable ratio). Files are excluded at the walk stage before scoring.
-- **Ranking**: weighted keyword overlap between `--task` and each file's path (3x) plus content (1x, capped), adjusted by a depth penalty favoring root-level files. Ties broken alphabetically.
-- **Truncation**: oversized files may be included as a head slice (first N lines fitting the remaining budget) rather than dropped entirely. Files are skipped entirely if remaining budget is below the floor (~50 tokens).
-- **Budget spending**: a lightweight project-structure tree overview is included only when budget slack remains after packing ranked files, capped at ~200 tokens.
-- **Manifest schema**: `{ budget, used, included: [{path, tokens, reason}], excluded: [{path, reason}] }` — every file appears in exactly one list with a recorded reason.
-
-## File Roles
+## Key Files
 
 | File | Role |
-|---|---|
-| `ctxpack.py` | CLI entry point, argument parsing, walking, noise detection, bundle assembly, manifest output |
-| `ranking.py` | Tokenization, scoring function, ranking logic |
-| `SPEC.md` | Single source of truth for `ctxpack` behavior |
-| `AGENTS.md` | Agent instructions for this repo |
-| `.agents/skills/` | OpenCode skills (e.g. `dataverse-python-production-code`) |
+|------|------|
+| `ctxpack.py` | CLI entry point, argument parsing, orchestration |
+| `ranking.py` | Deterministic file-ranking logic |
+| `README.md` | User-facing documentation |
+| `SPEC.md` | Full specification and constraints |
+| `CLAUDE.md` | This file |
+| `.gitignore` | Ignored files and directories |
 
-## Error Handling
+## Scope Rules
 
-- Missing required flags or non-positive `--budget` → exit 1, one-line stderr message.
-- Bad `--path` → exit 2, one-line stderr message.
-- Unexpected internal errors are caught at the top level (`if __name__ == "__main__"` try/except) and converted to exit 1 with a one-line stderr message — never a raw traceback.
+- Focus edits strictly on `ctxpack.py` and `ranking.py`.
+- Do not generate or depend on non-standard files such as `AGENTS.md`, `PROMPTS.md`, or `JOURNAL.md`.
+- Output files (`--out`, `--manifest`) must conform to the Markdown and JSON specification formats in `SPEC.md`.
 
-## Workspace Notes
+## Verification
 
-- The workspace path contains spaces (`D:\hackathon class work`). Always quote paths in shell commands.
-- `README.md` is an empty placeholder — do not treat it as spec.
-- No `opencode.json` exists at the repo root.
+```powershell
+# Quick end-to-end check
+python ctxpack.py --path . --task "test" --budget 500 --out /tmp/test.md --manifest /tmp/test_manifest.json
+
+# Verify manifest is valid JSON
+python -c "import json; json.load(open('/tmp/test_manifest.json')); print('OK')"
+
+# Verify token count of output
+python -c "import math; text=open('/tmp/test.md').read(); print(f'Tokens: {math.ceil(len(text)/4)}')"
+```
